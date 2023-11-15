@@ -1,0 +1,363 @@
+                    +---------------------------+
+        |   CS 140    |
+        | PROJECT 3: VIRTUAL MEMORY |
+        |    DESIGN DOCUMENT  |
+        +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+KyeongHoon Min <mkh533@unist.ac.kr>
+Hyeonjin Jo <zxzx1825@unist.ac.kr>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+      PAGE TABLE MANAGEMENT
+      =====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[Datastructure for PAGE TABLE MANAGEMENT]
+typedef struct _support_page{
+    bool load;                            // Flag for whether or not the support_page is loaded
+    struct list_elem support_page_elem;   // support pages are included at struct thread as support_page_table, so list_elem is needed
+    void* page_num;                       // virtual address of support_page which is used at page_fault and support_page_search 
+    struct file* mapped_file;             // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(struct file*) should be stored
+    off_t offset;                         // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(off_t offset) should be stored
+    uint32_t read_byte                    // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(read_bytes) should be stored
+    uint32_t zero_bytes;                  // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(read_bytes) should be stored
+
+    bool write;                           // Flag for Permission to write
+
+    /* 4.3.4. Memory Mapped files */
+    mapid_t mapid;                        // If the support_page is initiazed by syscall "map_file2vm", mapid is used at identifying the mapped file
+
+    /* Second-chance Algorithm */
+    bool disk;                            // Flag for whether or not the support_page is swapped
+    size_t idx_disk;                      // index of disk because this is used to load the swapped page into memory
+
+    /* 4.3.5. Accessing User Memory
+    bool using;                           // disk IO interlock (During read/write in read_fd2buffer, write_buffer2fd, it should not be set to victim page)
+
+    uint32_t *pagedir;                    // pagedir of the owner thread
+    
+}support_page;
+
+struct thread 
+   struct list support_page_table;        // support_pages are stored at support_page_table and each thread has its own support_page_table independently
+
+   // Stanford Manual said: You will need to arrange another way, such as saving esp into struct thread on the initial transition from user to kernel mode.
+   bool user2kernel;                      // Flag for whether this thread is in kernel mode of user more (our mechnism is based on system call is called or not)
+   uint32_t* user2kernel_esp;             // Esp value at user_mode
+
+   mapid_t mapid;                         // Thread should have an unique identifier for each of mapped files
+
+   struct semaphore child_not_give_to_unmap;  // Synchronization between parent process's unmap and child process's unmap (Child process first, Parent process later) (mmap-exit)
+
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+
+Locating the frame is done at void palloc_free_get_wf(void* page)
+
+If there is a place in the frame, make a frame based on the page returned by the palloc_get_page.
+p = palloc_get_page(f);
+frame* fr = frame_init();
+frame_set(fr, p, f, thread_current()->pagedir, addr, sp);
+return fr->page;
+
+If there is no space in the frame, call the swap function. 
+1. Find_victim frame: Approximized LRU implemented with Clock and Second change algorithms
+2. If support_page is a mapped file, update mapped file according to the page is dirty or not
+3. If support_page is not mapped file, swap_out
+4. Free victim frame
+Then if there is a place in the frame after swap function, make a frame based on the page returned by the palloc_get_page.
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+When both kernel address and user virtual address are accessing to a single frame can violate the consistency of accessed and dirty bits
+We only allow to use virtual address in accessing a signle frame. Then there is no case that the kernel address is used to access a single frame.  
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+When two user processes both need a new frame at the same time, two process must be in palloc_get_page_wf
+We adds an additional semaphore palloc_at_once, so that only one process can get a new frame and the other process can get a new frame later.
+Also, we adds an additional semaphore frame_table_lock, so that only one process can search frame_table
+As a result, only one process can get a new frame and the other process can get a new frame later.
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+We use support_page and frame to representing virtual-to_physical mapping
+Each of support_pages has a virtual address "page_num"
+Each of frames has two address "page" for frame_page(physical) and "addr" for virtual address of page(virtual)
+So, we are able to map from the virtual address to the physical address.
+
+Both support_page_table and frame_table are implemented by list which is simple data structure to store.
+
+           PAGING TO AND FROM DISK
+           =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+[Datastructure for PAGING]
+struct list frame_table;                  // Frames are stored at frame_table
+
+struct list_elem* iterator;               // Clock algorithm is based on the circular list, we use this pointer as iterator of circular list
+typedef struct _frame{
+    void* page;                           // Address of Frame Page
+    void* addr;                           // Address of Virtual address which is pointing to frame
+    enum palloc_flags flag;               // Flag for palloc_flags (Original Pintos has 3 flags, PAL_USER, PAL_ZERO, and PAL_ASSERT)
+    struct list_elem frame_elem;          // Frame is included at frame_table, so that list_elem is needed
+
+    /* Second-chance Algorithm */
+    uint32_t *pagedir;                    // pagedir of the owner thread and it is needed to use function, pagedir_is_access
+    support_page* sp;                     // Support page of the frame, it is needed to store support_page => Just use support_page_get
+}frame;
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+We implemented Approximized LRU implemented with Clock and Second change algorithms
+
+find_frame_victim()
+- iterator is used to save the last search frame (Clock algorithm is based on circular list)
+1. if the support_page is being in read/write => sp->using is true(disk io interlock)
+  => In this case, this frame must not be chosen as victim frame (4.3.5. accessing user memory)
+  => move next
+2. if the accessed bit of frame is set to 1
+  => Give second chance, Set accessed bit of frame to 0
+3. if the accessed bit of frame is set to 0
+  => We find victim frame
+4. iterator update (If the iterator is pointing to the end of frame_table => update it as the begining of the frame_table)
+
+Hence, we can find a victim frame with approximate LRU (Clock algorithm and Second change algorithm)
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+Just use pagedir_clear_page(pagedir, page)
+For example in out implemenation,
+pagedir_clear_page(frame_victim->pagedir, frame_victim->addr) @frame.c
+pagedir_clear_page(thread_current()->pagedir, f->addr) @frame.c
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+Based on 4.3.3. Stack Growth @Stanford Manual
+Actually, fault_addr must be in usermem (addr != NULL && is_user_vaddr(addr))
+However, the 80x86 PUSH instruction checks access permissions before it adjusts the stack pointer, so it may cause a page fault 32 bytes below the stack pointer.
+  32 byte = 2^5 * 2^3 bits => (1<<8)
+Also, allowed absolute limit on stack size: 8MB
+  8MB = 2^3 * 2^10 * 2^10 * 2^3 => (1 << 26)
+
+Our implemenation is shown below.
+static bool check_addr2stack(void* fault_addr, void* esp){
+   return check_addr2usermem(fault_addr) && fault_addr >= (esp - (1<<8)) && fault_addr >= (PHYS_BASE - (1<<26));
+}
+
+Hence, if the return value of check_addr2stack is true => We can grow stack
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+There are some shared data structures, for example as I mentioned before, frame_table at frame.c and swap_bmp at swap.c.
+So, we need to implement synchronization to avoid deadlock and incosistency.
+Also, when multiple process executed parallelly, there is a case finding victim_frame which is loaded by other process.
+In this case, the process access the other process's support_page_table.
+If the owner of the support_page_table modify this support_page_table, then this violate the consistency of support_page_table
+
+Additional semaphore frame_table_lock, so that only one process can search frame_table.
+Additional semaphore swap_sema, so that only one process can access swap_bmp.
+Additional semaphore support_page_table_at_once, so that only on process can access support_page_table
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+Also, when multiple process executed parallelly, there is a case finding victim_frame which is loaded by other process.
+In this case, the process access the other process's support_page_table.
+If the owner of the support_page_table modify this support_page_table, then this violate the consistency of support_page_table
+
+Additional semaphore support_page_table_at_once, so that only on process can access support_page_table
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+In our implmentation, we add a variable "using" to support_page.
+when process read/write the file by system call read_fd2buffer and write_buffer2fd,
+We iterate from buffer to buffer+size to set sp->using = true to avoid this support_page or frame is set to victim page.
+
+At read_fd2buffer and write_buffer2fd
+for (buffer_copy = buffer; buffer_copy <= buffer + size; buffer_copy += PGSIZE) {
+  support_page *sp = support_page_get((uint32_t)buffer_copy & ~PGMASK);
+  if(sp != NULL && sp->load == true) sp->using = true;
+}
+
+At frame* find_frame_victim(void)
+When, frame_candidate->sp->using == true, we do not choose this frame as victim frame
+
+Hence, we can avoid to choose the frame in read or write as victim frame.
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+When a page fault occurs during system calls, the following steps are taken to handle it gracefully: 
+If the accessed address is deemed safe, a new page is allocated through stack growth or by loading the page from the support page table if it is not already loaded. 
+Additionally, a semaphore called "frame_table_lock" is used to prevent the deletion of active frames.
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+In terms of synchronization, our design strikes a balance between using a single lock for the entire VM system and employing multiple locks. 
+We have opted for a hierarchical locking approach, which allows for a reasonable level of parallelism while ensuring thread safety. 
+This approach involves utilizing multiple locks to cover different critical sections of the VM system, such as page tables, frame allocation, and process synchronization.
+By carefully identifying and separating areas of contention, we minimize the risk of deadlock and enhance overall system performance. 
+The decision to adopt this hierarchical locking design is driven by the need to effectively manage synchronization complexity while accommodating the demands for parallelism, resulting in a robust and efficient VM system.
+
+       MEMORY MAPPED FILES
+       ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct thread{
+  mapid_t mapid;                         // Thread should have an unique identifier for each of mapped files
+}
+
+typedef struct _support_page{
+    struct file* mapped_file;             // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(struct file*) should be stored
+    off_t offset;                         // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(off_t offset) should be stored
+    uint32_t read_byte                    // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(read_bytes) should be stored
+    uint32_t zero_bytes;                  // If the support_page is initiazed by syscall "map_file2vm", then information of mapped file(read_bytes) should be stored
+
+    /* 4.3.4. Memory Mapped files */
+    mapid_t mapid;                        // If the support_page is initiazed by syscall "map_file2vm", mapid is used at identifying the mapped file
+}support_page;
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+Memory mapped file is mapped and unmapped by map_file2vm(int fd, void* addr) and unmap_mappedfile(mapid_t mapid), respectively.
+When we call system call "map_file2vm", we make a new support_page by support_page_init and support_page_set and update variables in support_page
+In this case, we do not load it in memory at first because of demanding paging.
+
+In Page fault, when we load a frame from support_page
+So, function "support_page_load" loads this mapped file according to support_page(mapid > 0) (demanding Paging)
+  file_seek (sp->mapped_file, sp->offset); 
+  file_read (sp->mapped_file, kpage, sp->read_bytes) != (int) sp->read_bytes)
+  memset (kpage + sp->read_bytes, 0, sp->zero_bytes);
+  external_install_page(sp->page_num, kpage, sp->write)
+
+In evicition, when we need a new frame and the chosen victim frame is memory mapped file
+then we just need to update_dirty_page according to the pagedir_is_dirty is 0 (Don't need to update_dirty_page) or 1 (Need to update_dirty page)
+(memory mapped file does not need to be swapped out!)
+
+Hence, we can integrate memory mapped files into virtual memory system.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+@ syscall.c
+struct list_elem* curr = NULL;
+struct list_elem* next = NULL;
+
+//printf("%x\n", addr);
+for(curr = list_begin(&t->support_page_table); curr != list_end(&t->support_page_table); curr = next){
+    support_page* temp = list_entry(curr, support_page, support_page_elem);
+    next = list_next(curr);
+    if(temp->page_num == addr){
+      //printf("%x\n", temp->page_num);
+      return -1;
+    }
+}
+
+Before add a new mapping file, we check the support_page_table whether there will be confilcting or not
+Hence, we not allow to a new file mapping overlaps any existing.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+As I mentioned at C2,
+Memory mapping is different at support_page_load and eviction.
+Without these difference, in our implementaion, mmaped frame and normal frame share much of code without eviction and support_page_load
+
+         SURVEY QUESTIONS
+         ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?

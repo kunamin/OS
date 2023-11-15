@@ -1,0 +1,31 @@
+Manual from blackboard
+
+1. when the amount of physical memory is full
+2. Swap the data in memory to a slot in the backing store
+
+Method
+1. struct block* block_get_role
+2. block_sector_t block_size
+3. void block_read
+4. void block_write
+
+Swap table
+slot Management
+Second change algorithm
+
+Slot Management를 위해 struct bitmap 사용 @lib/kernel/bitmap.c data structure
+Block Interface를 위해 struct block을 선언 @devices/block.h 
+
+Stanford Pintos
+You may use the BLOCK_SWAP block device for swapping, obtaining the struct block that represents it by calling block_get_role()
+
+23-06-06
+HJ
+swap할 때
+frame -> Free
+thread_current()->pagedir의 page -> clear
+support_page -> 유지 (+ 이 page가 disk에 있는지 아닌지, disk에 있다면 어느 disk idx에 있는지 저장해줄 필요가 있다)
+이걸 몰라서 시간 너무 많이 썼네 ...
+
+dirty이면 swap_out을 안하는 게 아니라
+dirty이면 swap_out하는데, 파일이었으면 파일에 저장을 해줘야하는 것

@@ -1,0 +1,51 @@
+HJ
+23-05-27
+
+4.1.5 Managing the Frame Table 정리
+
+[What is the frame table]
+The frame table contains one entry for each frame that contains a user page
+Each entry in the frame table contains a pointer to the page
+
+여기서의 frame은 user page가 생성될 때마다, 그 user page가 저장되어있는 frame(Physical memory)에 대한 정보를 담고 있다? 정도로 생각
+그 element들에 어떤 변수가 들어가야할지 정리를 해봐야할 듯함    -
+
+Suggested order of implementation에 적힌 process.c를 수정하라는 건
+지금은 user_page가 생성될 때 palloc_get_page 함수를 통해서 생성이 되는데
+frame에 대한 함수 내부에서 palloc_get_page를 function call하고 생성된 page에 대한 pointer를 변수로 가져야할 거 같음
+
+그럼 page에 대한 pointer를 변수로 담고 있어야하는데 page를 정의하는 게 먼저인 듯함... (palloc_get_page가 어떤 식으로 page할당하는 지 확인)
+palloc_get_multiple 보니까 그냥 void* pages를 retunr하는 거보니까 그냥 주소로 생각하면 되지 않을까
+
+Suggesetd order of implementation에 적힌 1. Frame_table이라는 건
+Frame_element를 원소로 하는 table이라는 거고,
+지금은 swaping에 대한 구현을 하지 않았으니. table 꽉 차면 fail하게 해야하고
+
+Not used Frame이 존재할 때
+    Frame을 요청해야할 때: palloc_get_page(PAL_USER)
+Not all free Frame일 때
+    Frame을 요청해야할 때: Swapping
+    Eviction(어떤 frame을 swapping의 대상으로 선택할 것인가에 대한 step: Manual에 있음)
+
+typedef struct _frame{
+    void* page;
+    _frame():page(NULL) {} // Initialization
+}frame;
+
+흠 근데 왜 컴파일이 안되지 ... (해결)
+make에서 이 command에서 오류가 발생
+gcc -m32 -c ../../vm/swap.c -o vm/swap.o -g -msoft-float -O -fno-stack-protector -nostdinc -I../.. -I../../lib -I../../lib/kernel -Wall -W -Wstrict-prototypes -Wmissing-prototypes -Wsystem-headers -DUSERPROG -DFILESYS -DVM -MMD -MF vm/swap.d
+
+*** No rule to make target `vm.swap.o', needed by `kernel.o'.  Stop.
+
+HJ
+23-05-27
+arg-none에서 kernel panic (해결)
+Kernel PANIC at ../../lib/kernel/list.c:171 in list_insert(): assertion `is_interior (before) || is_tail (before)' failed.
+Project2-2했을 때도 struct list hanging_child 부분에서 비슷한 오류떴었는데 list_init를 안해줘서 이런 오류가 발생했었
+
+struct list frame_table도 list_init를 하고 써야하는데 Function call하는 곳이 없다.
+
+어디서 function call해야할지 위치 찾는중~ing
+전체 system을 initialzie하는 파일이 있었던 거 같은데
+threads/init.c에서 init 함수 모여있는 곳에 추가 완료

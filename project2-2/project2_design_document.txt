@@ -1,0 +1,370 @@
+             +--------------------------+
+             |          CS 140          |
+             | PROJECT 2: USER PROGRAMS |
+             |     DESIGN DOCUMENT      |
+             +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+KyeongHoon Min <mkh533@unist.ac.kr>
+Hyeonjin Jo <zxzx1825@unist.ac.kr>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+[lock vs mutex vs semaphore]
+https://stackoverflow.com/questions/2332765/what-is-the-difference-between-lock-mutex-and-semaphore
+
+[B1, B3, B4, B5, B6, B7, B8, B9, B10, B11]
+
+                 SYSTEM CALLS
+                 ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+<syscall.h>
+    struct semaphore filesys_at_once;
+        It is not safe to call functions implemented in the 'filesys' in multiple threading environment. 
+        We have to synchronize to enter funtions of the ‘filesys’
+
+
+<syscall.c>
+    typedef int pid_t;
+        The data type of pid used as a argument of the function "wait_pid" is "pid_t"
+
+
+<thread.h> 
+struct thread
+    int success_exit;
+        Variable that stores information about whether or not the child process was successfully exited
+
+    int success_load;
+        Variable that stores information about whether or not the child process was loaded
+
+    struct thread* parent
+        When synchronizing a load between parent process and child process using semaphore “child_not_load”, the parent process of the child process must be accessible.
+
+    struct list hanging_children;
+        In function “process_wait(pid)”, parent process must be able to access child processes because it must find a child process of which child->tid == pid.
+    
+    struct list_elem hanging_child;
+        struct list_elem of a hanging_child in struct list hanging_children 
+
+    struct semaphore child_not_exit;
+        If the child process(tid==pid) is alive, parent process must wait for the child process to be exited. 
+        This synchronization can be solved by semaphore “child_not_exit”
+        See. Semaphore정리 at syscall.c
+
+    struct semaphore child_not_load;
+        If the child process is loaded, parent process must wait for the child process to be loaded. 
+        This synchronization can be solved by semaphore “child_not_load”
+        See. Semaphore정리 at syscall.c
+
+    struct semaphore child_not_give_to_succ_ex;
+        If the parent process fails to retrieve exit status of child process, we will not pass the synchronization tests. 
+        We need additional synchronization for that.
+        See. Semaphore정리 at syscall.c
+
+    bool wait_exit;
+        This boolean variable stores the case that the child process exits, but waits for the parent checks the exit status of it. 
+    
+    bool wait_exit_done;
+        This boolean variable stores the case that the child process entirely exits (the parent checked the exit status of it)
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+bool check_addr2usermem(void* addr){
+  return addr != NULL && is_user_vaddr(addr);
+  // 1. addr should not equal to NULL (Because it will be dereferenced later)
+  // 2. addr should be user memory (addr < PHYS_BASE)
+}
+
+void access_addr2usermem(void* addr){
+  if(!check_addr2usermem(addr)) sys_exit(-1);
+}
+
+When the system call is called, the pintos enters kernel mode.
+Before entering kernel mode, arguments used in system call are stored in the stack addressed by f->esp.
+The type of system call is determined by the system call number which is located in f->esp.
+
+Therefore, we need to verify whether f->esp and arguments for system call are data in user memory.
+So, we implemented function "access_addr2usermem" which calls the system call "exit(-1)" when the address is not in between user memory.
+
+reading user data - static int read_fd2buffer(int fd, void* buffer, unsigned size)
+If fd is invalid (fd < 0 || fd >= FD_MAX) => call sys_exit(-1)
+If process can't read file descriptor (fd == 1: STDOUT_FILENO and fd == 2: STDERR_FILENO) => return -1
+If process reads from the keyboard (fd == 0) => input_getc()
+If fd is valid (2 < fd && fd < FD_MAX) => use function "fild_read" at filesys/file.c
+
+writeing user data - static int write_buffer2fd(int fd, const void* buffer, unsigned size)
+If fd is invalid (fd < 0 || fd >= FD_MAX) => call sys_exit(-1)
+If process can't write file descriptor (fd == 0: STDIN_FILENO and fd == 2: STDERR_FILENO) => return -1
+If process writes to console (fd == 1) => putbuf()
+If fd is valid (2 < fd && fd < FD_MAX) => use function "fild_write" at filesys/file.c
+
+// struct semaphore filesys_at_once
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+In threads/vaddr.h
+/* Page offset (bits 0:12). */
+#define PGSHIFT 0                          /* Index of first offset bit. */
+#define PGBITS  12                         /* Number of offset bits. */
+#define PGSIZE  (1 << PGBITS)              /* Bytes in a page. */
+#define PGMASK  BITMASK(PGSHIFT, PGBITS)   /* Page offset bits (0:12). */
+=> Page Size of pintos is 4KB (1 << 12)
+
+When a system call causes a full page of data to be copied from user space into the kernel,
+=>  When the start and end of the data copied from user space into the kernel are matched to the start and end of the page frame (when it does not exist between two page frames)
+    There are at least 1 time of calling pagedir_get_page()
+=>  When the data copied from user space into kernel is inbetween two continuous page frames,
+    There are at most 2 times of calling pagedir_get_page() (1 for the front page frame and 1 for the back page frame)
+
+When a system call that only copies 2 bytes of data,
+=>  When the data copied from user space into kernel is in one page frames,
+    There are at least 1 time of calling pagedir_get_page()
+=>  When the data copied from user space into kernel is inbetween two continuous page frames,
+    There are at most 2 times of calling pagedir_get_page() (1 for the front page frame and 1 for the back page frame)
+
+I think there's no choice to improve
+
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+To implement the "wait" system call, we have modified the existing 'process_wait()' function in the 'process.c' file. 
+Initially, the 'process_wait()' function was implemented using a 'while' loop.
+
+We made the following changes to the function:
+1. Find a child in the calling process *t's list of children by iterating from 'list_begin(&(t->hanging_children))' to 'list_end(&(t->hanging_children))' and checking if the 'child_tid' matches the 'tid' of each elements of list.
+2. If no matching child is found, return -1 to indicate that the calling process has no direct children.
+3. If a matching child is found, use the child's semaphore to wait until the child exits. This ensures that the calling process waits until the child finishes execution.
+4. To handle the case where the child exits before its parent calls wait, use the child's semaphore to wait for the parent to invoke wait.
+5. Remove the child from the calling process's child list.
+  In this case, the statement "The process that calls wait has already called wait on pid. That is, a process may wait for any given child at most once." from the '3.3.4 System calls @Stanford Manual' is satisfied.
+6. Finally, return the 'success_exit' of child value to indicate that the child has exited successfully.
+
+By implementing these modifications, the 'wait' system call now allows the calling process to wait for its child processes to exit, 
+ensuring synchronization and proper handling of child processes in the system. 
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+[f->esp for system call number and stack for system call arguments]
+As I mentioned at B3,
+When the system call is called, the pintos enters kernel mode.
+Before entering kernel mode, arguments used in system call are stored in the stack addressed by f->esp.
+The type of system call is determined by the system call number which is located in f->esp.
+
+All of data, including system call number and system call arguments must exist in user memory. (User data)
+Therefore, we need to verify whether f->esp and arguments for system call are data in user memory.
+If it is not in user memory, the process must be terminated.
+
+[Strategy 1: Detector - whether the data is in user memory or not]
+We implemented function "check_addr2usermem" to check whether the data is in user memory or not.
+
+bool check_addr2usermem(void* addr){
+  return addr != NULL && is_user_vaddr(addr);  
+  // 1. addr should not equal to NULL (Because it will be dereferenced later)
+  // 2. addr should be user memory (addr < PHYS_BASE)
+}
+
+[Strategie 2: Error Handling - If the data is not in user memory, the process must be terminated]
+If the data is not in user memory, the process must be terminated.
+
+void access_addr2usermem(void* addr){
+  if(!check_addr2usermem(addr)) sys_exit(-1);
+}
+
+terminating process is done by calling sys_exit() with exit_status == -1 which means that this process is exited unsuccessfully.
+Then, we can ensure that all allocated data are freed because calling sys_exit(-1) executes thread_exit() and process_exit()
+
+[examples]
+bad-ptr test series
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+3.3.4 System calls @Stanford Manual
+The parent process cannot return from the exec until it knows whether the child process successfully loaded its executable.
+
+[Synchronization by semaphore "child_not_load"]
+This synchronization between the parent and the child is done by using semaphore "child_not_load"
+    (Parent)
+    After calling tid = thread_create (program_name, PRI_DEFAULT, start_process, fn_copy) @process_execute of process.c
+    The parent must wait for the child to load 
+    sema_down(&(t->child_not_load));
+    
+    (Child)
+    After calling success = load (program_name, &if_.eip, &if_.esp) @start_process of process.C
+    The child must store whether the load is success or not in its own variable "success_load" and notify the parent that the load is done
+    if(!success) {
+        t->success_load = -1;                   // store the status of load
+        sema_up(&t->parent->child_not_load);    // Wake up the parent
+    }
+    if(success) {
+        command2argv(fn_copy, &if_.esp);        // command2argv
+        t->success_load = 1;                    // store the status of load
+        sema_up(&t->parent->child_not_load);    // Wake up the parent
+    }
+
+[What if the parent recognized that the child is loaded unsuccessfully]
+When the child notify the parent that the load is done, the parent resumed the execution after sema_down(&(t->child_not_load));
+
+Since the load status of the child cannot be immediately determined at this point, 
+it is necessary to find the child process by looping list "hanging_children" of the parent process using "tid" returned from the function "thread_create()"
+If check_find == true and child->success_load == -1, this means that the child is failed to load.
+In case of that, it must return pid "-1"
+
+[Summary]
+The parent process cannot return from the exec until it knows whether the child process successfully loaded its executable.
+=> Synchronization by semaphore "child_not_load"
+
+How is the load success/failure status passed back to the thread that calls "exec"?
+=> The child must store whether the load is success or not in its own variable "success_load"
+
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+[How do you ensure proper synchronization and avoid race conditions when P calls wait(C) before C exits?  After C exits?]
+As mentioned in B5, 'wait(C)' waits for C to exit before P proceeds. 
+To ensure proper synchronization and avoid race conditions, it can use a Semaphore. 
+P can wait on the Semaphore until C signals that it has finished executing. 
+This way, P will not proceed until C has completed its execution, avoiding any race conditions. 
+The Semaphore acts as a synchronization mechanism between P and C.
+
+Even after C exits, it is possible to ensure appropriate synchronization using semaphores. 
+Before C exits, it can send a signal to the semaphore to indicate that its execution has successfully completed. 
+Subsequently, when P calls wait(C), C can receive the signal and safely exit with the semaphore released. 
+This approach guarantees that C does not exit before receiving confirmation that P has successfully waited, thus preventing race conditions.
+
+[How do you ensure that all resources are freed in each case?]
+In each case, when a process exits, it can ensure that all resources are freed by calling 'thread_exit()'. 
+This function can be used to close any open stored in 'fd_table' associated with the process. 
+Additionally, it can invoke 'process_exit()' to clean up the process's address space. 
+This involves calling 'pagedir_activate(NULL)' to deactivate the process's page directory 
+and 'pagedir_destroy(pd)' to deallocate the page directory. 
+By doing so, it properly releasess all resources associated with the process.
+
+[How about when P terminates without waiting, before C exits?  After C exits?]
+If P terminates without waiting for C, the behavior depends on the relationship between P and C. 
+If they are independent processes, both P and C will continue execution, 
+and the resources associated with both processes will be freed when each process exits independently.
+However, if P and C are dependent processes, and P terminates before C exits, C becomes an orphan process. 
+P frees all resources, but C does not.
+
+[Are there any special cases?]
+No specific special cases come to mind in this context.
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+[3.1.5 Accessing User Memory @Stanford Manual]
+There are at least two reasonable ways to do accessing user memory.
+1. verify the validity of a user-provided pointer, then dereference it.
+2. Check only that a user pointer points below PHYS_BASE, then dereference it.
+
+[Why]
+We used the first method to access user memory.
+This is because it is simplest way to handle user memory access and the second method requires to modify some implemtation of page_fault() @exception.c
+
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+[3.4.2 System Calls FAQ @Stanford Manual]
+Q: Can I set a maximum number of open files per process?
+A: It is better not to set an arbitrary limit. You may impose a limit of 128 open files per process, if necessary.
+Hence, we assigned a file descriptor table with 128 file descriptors to each threads.
+
+thread.h
+#define FD_MAX 128 
+
+struct thread {
+    """
+    struct file* fd_table[FD_MAX];
+    """
+}
+
+[Advantage] (Compared to linked-list implementation)
+1. Easy and Simple to implement
+2. Easy and Simple to Use
+3. Directly access file descriptor through thread->fd_table[fd]
+4. Size of struct thread is fixed
+
+[Disadvantage]
+1. Cannot open more files than FD_MAX
+2. Every time a new thread is created, fd_table with FD_MAX file descriptors must always be initialized
+3. When open, executes loop until thread->fd_table[i] == NULL
+
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+We din't change it.
+
+               SURVEY QUESTIONS
+               ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?

@@ -1,0 +1,179 @@
+Suggested Order of Implementation
+1. Supplemental page table
+2. Page fault handler
+
+supplemental page table은 무엇인가?
+4.1.4 Managing the supplemental Page Table @ Stanford Pintos
+The supplemental page table supplements the page table with additional data about each
+page. It is needed because of the limitations imposed by the page table’s format. Such
+a data structure is often called a “page table” also; we add the word “supplemental” to
+reduce confusion
+
+The supplemental page table is used for at least two purposes. Most importantly, on a
+page fault, the kernel looks up the virtual page that faulted in the supplemental page table
+to find out what data should be there. Second, the kernel consults the supplemental page
+table when a process terminates, to decide what resources to free
+
+Blackboard Manual
+Supplemental page table and page fault handler
+• See section “4.1.4 Managing Supplemental Page Table”
+• Modify userprog/process.c to record the necessary information in supplemental page table when loading an executable and setting up its stack
+• Implement loading of code and data segments in the page fault handler
+
+ Supplemental page table
+• The page table with additional data about each page
+• On a page fault, find out what data should be there for the faulted virtual page
+• On a process termination, decide what resources to free
+• Any data structure for the supplemental page table
+
+page_fault() @userprog/exception.c
+Stanford Manual, Blackboard Manual에 있는 order 참고
+
+[Plan]
+1. supplemental page table struct 구현
+    entry에 어떤 멤버변수가 들어가야하지?
+    hash table을 추천한다는데(Blackboard Manual) Any data structure라고 하니까 일단 사용해본 적 있는 list로 구현을 해보겠
+    page를 구별할 수 있는 수단이 필요 (1번 페이지인지, 2번페이지인지, ..., nth 페이지인지) 
+2. process.c에서 supplemental page table을 쓰도록 수정
+3. Page_fault 수정
+
+[thinkin9]
+1. 이거 구현하면서 Lazy loading 생각하면서 구현해야할듯
+    process.c 함수에서 실제 필요할 때 load하도록하고, 처음에는 load안되어있으니까(supplemental page만 set된 상태) 1st page fault 뜨는 건 강제됨
+    실제로 load 되었는지에 대한 bool 변수가 멤버변수로 들어가야할듯?
+
+   initial load할 때는 sp를 get하고
+   그 이후에 실제 page가 필요할 때 sp_table을 search하면서 load variable 확인하고
+   load variable == false이면, page fault일으키는데 이때 넘겨야하는 게 address가 있어야 함
+   그리고 그게 sp_table search할 때 want_address == sp_address인지 확인하면서 일치하는 sp를 찾을 수 있을테니
+   address에 대한 변수를 추가
+
+HJ
+23-05-28
+2. 지금 핀토스에 구현되어있는 부분 (pagedir.c, etc.)은 강의 시간에 배운 main_memory 부분이고
+    지금 우리가 구현해야하는 부분은 virtual memory이고, 이제 그 부분이 supplemental_page_table이라고 보면 될 거 같은데?
+    그리고 그 과정에서 virtual memory table을 관리하기 위해서 swap이라든지, lazy loading이라는지 그러한 기법들이 사용되니까 구현을 해야하는거고
+    + replacement policy도 ㅇㅇ
+    
+    지금 구현이 되어있는 Main memory 부분은 appendix A.7.x에 나와있으니 읽어보면서 지금 어떤 구조인지 파악하면 될 거 같음
+    32bits address = 10bits for page directory + 10bits for page table + 12bits for page offset
+    page directory @ userprog/Wpagedir.c
+    page table @ threads/pte.h
+    아 이제 조금 숲이 보이는 느낌
+
+3. Virtual memory 관점에서 loading an executable and setting up its stack할 때
+    support_page만 생성되고
+    그 이후에 page에 대한 접근이 일어날 때
+    page_fault가 일어나서 support_page를 찾아서 page를 physical memory에 load한다면
+    1. support_page에 physical memory에 load할 때 필요한 변수들을 저장하고 있어야하고 -> 완
+    2. physical memory에 load하는 함수를 만들어야한다 -> 완
+    3. 만든 함수를 page_fault()에서 사용하도록 구현 -> 완
+
+4. 위에 1,2,3 구현하고 돌리는데 arg-none부터 자꾸 무한루프돌길래 뭐지해서 디버깅을 했는데
+    page_fault()->support_page_load->file_read할 때 file_read가 자꾸 못 읽고 bytes_read가 0돼서 free되고 그래서 헤맸음...
+    project2-2파일 들어가서 디버깅도 하다가 못찾았는데, file_read가 안되니까 앞 전에 file_close한 부분 있나해서 찾아봤더니 load()에서 file을 close해버려서
+    page_fault에서는 file이 이미 close됐으니까 읽지 못했던 거 ㅇㅇ...
+    그래서 주석처리하니까 project2-2 부분은 잘 돌아가는데
+    그러면 file_close는 어디서 해야하나..
+    project3 testcase 부분들이 무한루프도는데 Timeout이 300초라서 줄일 수 있는 방법이 없는지 보는중 ;;
+    testcase 34개인데 300초면 ㅋㅋ;;
+    일단 암튼 suggested order of implementation 1, 2 -> 완
+
+[load_segment 함수 분석]
+Usage @load()
+if (!load_segment (file, file_page, (void *) mem_page,
+                    read_bytes, zero_bytes, writable))
+static bool
+load_segment (struct file *file, off_t ofs, uint8_t *upage,
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+{
+  ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+  ASSERT (pg_ofs (upage) == 0);
+  ASSERT (ofs % PGSIZE == 0);
+
+  file_seek (file, ofs);  => file의 시작점을 offset으로
+  while (read_bytes > 0 || zero_bytes > 0) 
+    {
+      /* Calculate how to fill this page.
+         We will read PAGE_READ_BYTES bytes from FILE
+         and zero the final PAGE_ZERO_BYTES bytes. */
+      size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+      => 얼마나 읽어야하는지
+      size_t page_zero_bytes = PGSIZE - page_read_bytes;
+      =>  얼마나 zero로 padding 해줘야하는지
+
+      /* Get a page of memory. */
+      //uint8_t *kpage = palloc_get_page (PAL_USER);
+      uint8_t *kpage = palloc_get_page_wf (PAL_USER);
+      // disk에 page 만들기 + with frame
+      if (kpage == NULL)
+        return false;
+
+      /* Load this page. */
+      => 파일을 read_bytes만큼 읽는다 => block_read
+      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+        {
+          // palloc_free_page (kpage);
+          palloc_free_page_wf (kpage);
+          return false; 
+        }
+      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      => zero padding
+
+      /* Add the page to the process's address space. */
+      => install_page -> pagedir_seg_page 
+      if (!install_page (upage, kpage, writable)) 
+        {
+          // palloc_free_page (kpage);
+          palloc_free_page_wf (kpage);
+          return false; 
+        }
+
+      /* Advance. */
+      read_bytes -= page_read_bytes;
+      zero_bytes -= page_zero_bytes;
+      upage += PGSIZE;
+    }
+  return true;
+}
+
+=> support_page에 추가해야할 변수
+0. page_num (passed by (void*) upage)
+1. file
+2. offset
+3. read_bytes
+4. zero_bytes
+5. writable or not
+
+[load 함수 분석]
+uint32_t file_page = phdr.p_offset & ~PGMASK;
+uint32_t mem_page = phdr.p_vaddr & ~PGMASK;   (vaddr[31:12])
+uint32_t page_offset = phdr.p_vaddr & PGMASK; (vaddr[11:0])
+uint32_t read_bytes, zero_bytes;
+
+[setup_stack 분석]
+static bool
+setup_stack (void **esp) 
+{
+  uint8_t *kpage;
+  bool success = false;
+
+  //kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  kpage = palloc_get_page_wf (PAL_USER | PAL_ZERO);
+  if (kpage != NULL) 
+    {
+      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      /* Add the page to the process's address space. */
+      => install_page -> pagedir_seg_page
+
+      if (success)
+        *esp = PHYS_BASE;
+        => Update esp
+      else
+        //palloc_free_page (kpage);
+        palloc_free_page_wf (kpage);
+    }
+  => 여기서는 block read를 수반하는 file_read 없이 zero page를 mapping하는 거라서
+  뒤에 support_page 부분 추가해주면 될 듯
+  return success;
+}

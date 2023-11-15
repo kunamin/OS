@@ -1,0 +1,242 @@
+      +--------------------+
+      |        CS 140      |
+      | PROJECT 1: THREADS |
+      |   DESIGN DOCUMENT  |
+      +--------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+KyeongHoon Min <mkh533@unist.ac.kr>
+Hyeonjin Jo <zxzx1825@unist.ac.kr>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+           ALARM CLOCK
+           ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+int64_t base_ticks @struct thread/thread.h
+"int64_t base_ticks" is used to store the number of ticks passed since the OS is booted when "timer_sleep()" is called.
+
+int64_t sleep_ticks @struct thread/thread.h
+"int64_t sleep_ticks" is used to store the number of ticks about how many ticks the current thread should sleep when "timer_sleep()" is called.
+
+static struct list sleep_list @/thread.c
+"sleep_list" is a linked list composed of sleeping threads so that we can avoid busy-waiting when "timer_sleep()" is called.
+
+int64_t nearest_ticks @/timer.c
+"int64_t nearest_ticks" is used to store ticks(base_ticks+sleep_ticks) of the nearest thread to wake up from sleep_list.
+(Added to minimize the time spent in "timer_interrupt()")
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+[Functionality of "timer_sleep()"]
+    if(arg_ticks<=0) return;
+        arg_ticks < 0: invalid arg_ticks are passed by argument -> Return
+        arg_ticks == 0: we don't need to sleep the current thread -> Return
+
+    enum intr_level old_level = intr_disable();
+        When timer_sleep() is called, interrupts are disabled to ensure the consistency of the thread's sleep time. 
+
+    int64_t start = timer_ticks();
+    thread_set_base_ticks(start);
+    thread_set_sleep_ticks(arg_ticks);
+        The "base_ticks" and "sleep_ticks" of the current thread are set when "timer_sleep" is called.
+        As we mentioned before, the sum of two variables means when the sleeping thread is woken up.
+
+    nearest_ticks = start + arg_ticks; (when start + arg_ticks < nearest_ticks)
+        We used "nearest_ticks" to store ticks(base_ticks+sleep_ticks) of the nearest thread to be woken up from the "sleep_list".
+        If the sum of the "base_ticks" and "sleep_ticks" is less than "nearest_ticks", we need to update this value by the new minimum value.
+        (See detailed description about why we use "nearest_ticks" in Question A3)
+
+    push_thread2sleep_list();
+        Push the current thread to the newly defined list data structure, the "sleep_list".
+
+    thread_block();
+    intr_set_level(old_level);
+        Block the current thread by calling the function "thread_block()".
+        Restore the previous interrupt level from the suspended interrupt level so that other threads can be scheduled.
+
+[Effect on the timer_interrupt]
+    The "timer_interrupt()" of the original PintOS is just incrementing "ticks" and calling "thread_tick()".
+    It's well enough because the "timer_sleep()" is implemented by busy-waiting so that the "timer_interrupt" doesn't need to wake up any threads.
+    As we modified the "timer_sleep()" to avoid busy-waiting, we need to implement a task to wake up the sleeping list.
+
+    During the sleep period, 'timer_interrupt()' is called regularly at 'TIMER_FREQ' per second. 
+    If the "static int64_t ticks" value reaches the "nearest_ticks" value, "thread_wakeup()" is called to unblock a thread such that "base_tick" + "sleep_ticks" == "nearest_ticks"
+    Then, this thread is added to the "ready_list" for scheduling.
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+[Time spent in the first implementation of the "timer_interrupt()"]
+    We had implemented the "timer_interrupt" by only using "sleep_ticks", this algorithm required the "timer_interrupt()" to search for all threads in the "sleep_list" at every tick (To find the sleeping thread to be woken up)
+    => We left this function in Line 177 ~ Line 199 @thread.c by comments. (We passed all tests assigned to project 1 with only the "sleep_ticks" implementation) (Commit Number: 7a533674049ad88cd41ade0ea4fd12994af47a82)
+    => Time spent: K x O(N), where K is the number of ticks and N is the number of threads in the "sleep_list" 
+
+[Time spent in the second implementation of the "timer_interrupt()"]
+    Instead, we used the "base_ticks" and the "sleep_ticks" to calculate the wake-up time of threads so that we can minimize the amount of time spent in the "timer_interrupt".
+    Also, we used the "nearest_ticks" to store the wake-up time of the nearest thread to wake up from the "sleep_list"
+    When "ticks" is equal to "nearest_ticks", "thread_wakeup()" is called to wake up the thread with the smallest "sleep_ticks" + "base_ticks" value in the "sleep_list".
+    As a result, we don't need to search for all thread in "sleep_list" until the "ticks" reaches the "nearest_ticks"
+    => Time spent: O(N), where N is the number of threads in the "sleep_list".
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+[Basic Background to avoid busy-waiting]
+    The function "timer_sleep()" is originally implemented by busy-waiting (Suspend execution until the sleeping thread woke up via Infinite While Loop)
+    Avoiding busy-waiting in "timer_sleep()" requires two TODOs.
+    1. Define variables in "struct thread" to store information about when the sleeping thread woke up
+    2. Wake up the sleeping thread
+    3. Initialize a new data structure that stores sleeping threads like "struct list all_list" and "struct list ready_list"
+
+[1. Define variables in "struct thread" to store information about when the sleeping thread woke up]
+    At first, we defined one new variable, "int64_t sleep_ticks" which stores the number of ticks about how many ticks the current thread should sleep.
+    We implemented "thread_wakeup()" to search for all threads in the "sleep_list" while it decremented 1 tick of the "sleep_ticks" and found a thread such that "sleep_ticks" == 0 (Need to wake up)
+    Since the "thread_wakeup()" is called by the "timer_interrupt()" at every tick, then we can easily find the next thread to be woken up.
+    => We left this function in Line 177 ~ Line 199 @thread.c by comments. (We passed all tests assigned to project 1 with this implementation)(Commit Number: 7a533674049ad88cd41ade0ea4fd12994af47a82)
+
+    However, the timer spent in the "timer_interrupt()" is equal to K x O(N), where K is the number of ticks and N is the number of threads in the "sleep_list" (See A3.)
+
+    We wanted to minimize the time spent in the "timer_interrupt()" so we added one additional variable, "int64_t base_ticks" which stores the number of ticks passed since the OS is booted.
+    Then, we can know the time that the sleeping thread should be waking up is equal to "base_ticks" + "sleep_ticks".
+    Also, we used the "nearest_ticks" to store the wake-up time of the nearest thread to be woken up from the "sleep_list"
+    By using the separate variable "nearest_ticks" to keep track of the next wake-up time, the "timer_interrupt()" can avoid searching the entire "sleep_list" on each interrupt. 
+    This reduces the amount of time spent in the interrupt handler and improves overall system performance. (See A3.)
+    (Related Commit Number: 9efd25ce23c4e69d887012c55cd723217c4d8319 / 2af3de4478c19c68247b51b60e720f79abf1a625 / c0832ce06c2865ed250e2b92040e45dccb8189ad)
+
+[2. Function to Wake up the sleeping thread]
+    We can now find the nearest thread to be woken up from the "sleep_list" by using the "nearest_ticks".
+    Then, we need to remove the "list_elem" of the nearest thread from the "sleep_list" and unblock the nearest thread.
+    Since basic functions for these tasks are already implemented in the original PintOS, then we use list_remove() from list.c and thread_unblock() from thread.c
+
+    Commit Number: 2af3de4478c19c68247b51b60e720f79abf1a625
+    As we modified our implementation, we get stuck in the Infinite loop unlike before.
+    We know that the waking up part of the "thread_wakeup()" function doesn't work after this function is executed only 1 time. (ticks are just incrementing without waking up other sleeping threads)
+    Then, we find that reasons why the waking up part doesn't work is the "nearest_ticks" is remaining the same after the nearest thread is woken up.
+
+    We need to update the "nearest_ticks" value to the "next_nearest_ticks" value when the nearest thread wake up.
+    However, the "nearest_ticks" is defined at timer.c, however, the function "thread_wakeup" is implemented at thread.c
+
+    Commit Number: c0832ce06c2865ed250e2b92040e45dccb8189ad
+    We modify the function "thread_wakeup()" to find the "next_nearest_ticks" during looping the "sleep_list".
+    So, we can update the "nearest_ticks" to the "next_nearest_ticks" at timer.c if the function "thread_wakeup()" at thread.c returns the "next_nearest_ticks" value.
+
+[3. Initialize a new data structure that stores sleeping threads like "struct list all_list" and "struct list ready_list"]
+    We defined one new list data structure, sleep_list, which stores sleeping threads.
+    The idea of using a list data structure came from usages of "all_list" and "ready_list" in the original PintOS.
+
+       PRIORITY SCHEDULING
+       ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Nothing added (int priority is already defined at struct thread)
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+[Basic Background to priority scheduling]
+    Since the scheduling method of the original PintOS is "Round Robin"(written in TA session materials "project_1.pdf"), then the "ready_list" is implemented by using "FIFO"(First-In, First-Out).
+    The thread returned from the "next_thread_to_run()" is "list_entry(list_pop_front (&ready_list), struct thread, elem)".
+    As a result, we need to modify the scheduling method from "Round Robin" to "Priority scheduling" and the "next_thread_to_run()" that returns the thread having the highest priority.
+
+[Preemptive or Non-Preemtive]
+    The PintOS Manual from Stanford University says that "When a thread is added to the ready list that has a higher priority than the currently running thread, the current thread should immediately yield the processor to the new thread."
+    This statement means that the priority scheduling must be Preemptive.
+
+[Set and get the priority of the thread]
+    Setting and getting the priority of the thread are done by the "thread_set_priority()" and the "thread_get_priority()", respectively.
+
+[next_thread_to_run()]
+    Function flow: schedule() -> struct thread *next = next_thread_to_run() -> switch_threads(cur, next)
+    Then, we need to find the thread having the highest priority at the "next_thread_to_run()"
+
+    We defined the function "get_max_list_elem" to get the thread having the highest priority at the "ready_list"
+    Finding such a thread requires to know what number is the highest priority, so we add a new function "get_max_priority()".
+
+    The "get_max_priority()" searches all threads in the "ready_list", then it returns the highest priority value.
+    => O(m) where m is the number of threads in the "ready_list"
+
+    The "get_max_list_elem()" searches for all threads in the "ready_list" whose the "priority" is equal to the "priority_max"(returned value by calling "get_max_priority()").
+    => struct list_elem* le = get_max_list_elem();
+    => O(m) where m is the number of threads in the "ready_list"
+
+    Then, we need to remove the returned list_elem from the "ready_list" because it will be scheduled to run soon and return the "list_elem" pointer of thread having the highest priority.
+    => list_remove(le); 
+    => return list_entry(le, struct thread, elem);
+
+[When should CPU do priority scheduling]
+    1. First of all, when the function "schedule() is called. (See B7. [next_thread_to_run()])
+
+    The PintOS Manual from Stanford University says that
+    2. "When a thread is added to the ready list that has a higher priority than the currently running thread, the current thread should immediately yield the processor to the new thread."
+    => Modify the "thread_create()"
+    The currently running thread is the thread having the highest priority. (Inference based on the definition of priority scheduling)
+    When a created thread has a higher priority than the current thread, the current thread should yield.
+    =>  if(thread_current()->priority < t -> priority) thread_yield();
+    (Commit Number: cebc57dda6f29492a0c5345d826a925257a9ab97 / cdc915815c4b7e325b42ae1f540a24934ab593e1)
+
+    The PintOS Manual from Stanford University says that
+    3. "A thread may raise or lower its own priority at any time, but lowering its priority such that it no longer has the highest priority must cause it to immediately yield the CPU."
+    => Modify the "thread_set_priority()" (the priority of the thread is set to a new priority)
+    The currently running thread is the thread having the highest priority. (Inference based on the definition of priority scheduling)
+    When the priority of the current thread is set to another value by the "thread_set_priority()", then it is possible the new priority of the current thread is lower than the highest priority in threads of the "ready_list"
+    In such a situation, the current thread should yield.
+    =>  thread_current ()->priority = new_priority;
+    =>  int priority_max = get_max_priority();
+    =>  if(new_priority < priority_max) thread_yield();
+    (Commit Number: f9d006816d957648bdf18740ba03d950cf838dab)
+
+[Reference]
+    https://www.guru99.com/priority-scheduling-program.html
+
+         SURVEY QUESTIONS
+         ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?

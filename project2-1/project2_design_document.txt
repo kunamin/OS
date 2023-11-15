@@ -1,0 +1,252 @@
+             +--------------------------+
+
+             |          CS 140          |
+             | PROJECT 2: USER PROGRAMS |
+             |     DESIGN DOCUMENT      |
+             +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+KyeongHoon Min <mkh533@unist.ac.kr>
+Hyeonjin Jo <zxzx1825@unist.ac.kr>
+
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+[strtok_r]
+https://cplusplus.com/reference/cstring/strtok/
+https://elixir.bootlin.com/glibc/glibc-2.17.90/source/string/strtok.c
+https://elixir.bootlin.com/glibc/glibc-2.17.90/source/string/strtok_r.c
+
+[Unix Shell]
+https://www.tutorialandexample.com/advantages-of-unix-operating-system
+
+[System Call]
+https://en.wikipedia.org/wiki/System_call
+https://rninche01.tistory.com/entry/Linux-system-call-table-%EC%A0%95%EB%A6%ACx86-x64
+
+[File Desciptor]
+https://en.wikipedia.org/wiki/File_descriptor
+https://mintnlatte.tistory.com/266
+
+
+               ARGUMENT PASSING
+               ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+Nothing added.
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+[Flow of argument passing in Pintos]
+main @threads/init.c
+run_actions @threads/init.c
+run_task @threads/init.c
+    When "process_wait(process_execute(task))" is called then the process is executed.
+process_execute @userprog/process.c
+start_process @userprog/process.c
+    command2argv() @userprog/process.c
+        argv2stack() @userprog/process.c
+thread_create @threads/thread.c
+
+[Process to implement argument parsing in Pintos]
+The process_execute() function requires the file_name which is the first token of file_name(not yet parsed).
+This tokenization is done by strtok()_r.
+In load() at start_process() requires the file_name which is also the first token of command.
+This tokenization is done by strtok()_r.
+In our implementation of argument passing, we use command2argv() and argv2stack() functions to parse the not yet parsed file_name to stack.
+In command2argv(), we calculate argc value and argv array by using loop and strtok_r()
+From this argv in argv2stack, we push arguments to the stack by using user stack pointer.
+
+[Order of stacking arguments]
+The order of stacking arguments are described in detail at our pintos 2-1 project manual and Stanford PintOS manual.
+(See Push arguments in stack @Our Project2-1 Manual and 3.5 80x86 Calling Convention @Stanford PintOS)
+1. push arguments (e.g. 'bar\0' and 'foo\0') 
+2. push word alignment
+3. push address of arguments (e.g. 0xbfffffc and 0xbffffd8)
+4. push address of argv[0]
+5. push argc value
+6. push return address (fake reterun address)
+
+This parsing process ensures that the elements of argv are arranged in the correct order and are stored in the stack from PHYS_BASE downwards, avoiding overflowing the stack page.
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+The Original Pintos implements strtok_r() instead of strtok() to parse a command.
+This is because strtok() uses a global variable to keep track of the position of the last token found, and this can lead to issues in a multi-threaded environment. 
+When strtok() is called from different threads simultaneously, the global variable may be updated by one thread while another thread is still using it, leading to incorrect parsing results.
+In contrast, strtok_r() uses an additional argument called save_ptr to keep track of the position of the last token found for each call to strtok_r(). 
+This allows multiple threads to call strtok_r() simultaneously without interfering with each other's parsing process. 
+Therefore, strtok_r() is a safer choice for a multi-threaded environment like Pintos.
+
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+[Flexibility]
+The Unix approach provides a great deal of flexibility because the shell can interpret and expand the arguments before invoking the executable.
+For example, users can use various shell features, such as file globbing(*.jpg), variable substitution(echo ${var:= 2023}), and command substitution(seq 1 1 10), to manipulate the arguments before passing them to the executable.
+
+[Portability]
+Another advantage of the Unix approach is its portability. 
+The shell is a user-level program, which means that it can be replaced with a different shell that provides similar functionality. 
+This makes it easy for users to customize their environment to suit their needs. 
+Additionally, shell scripts can be written to automate tasks, and these scripts can be executed on different Unix-like systems, making it easy to move scripts from one system to another.
+For example, when creating a script, it can be made portable by starting it with "#!/bin/sh".
+
+
+
+                 SYSTEM CALLS
+                 ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+<thread.h>
+1. [struct thread] struct file* fd_table[FD_MAX]: Each thread has a set of file descriptors in file descriptor table and accesses a file through the file descriptor.
+    (it is initialized by memset(0) in the function "thread_init()")
+2. #define FD_MAX 128: The number of file descriptors in file descriptor table is 128. (See 3.4.2. System Calls FAQ)
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+[Describe how file descriptors are associated with open files.]
+[File descriptor table]
+In Stanford PintOS, "Each thread has an independent set of file descriptors"
+
+thread can access a file through the file descriptor .
+
+It is initialized by memset(0) in the function "thread_init()"
+Also, the number of file descriptors in file descriptor table is 128. (See 3.4.2. System Calls FAQ)
+
+[With open file]
+When the system call number is equal to SYS_OPEN(==6)
+With case statements, it executes 1. access_addr2usermem(esp + 1); and 2. f->eax = load_file2fd(*(esp + 1));
+access_addr2usermem(esp + 1): Check whether the address passed to load_file2fd() is in user stack or not.
+In load_file2fd(), the file at *(esp + 1) is assigned to the currently running thread's fd_table.
+
+From Stanford PintOS
+fd_idx == 0, 1 are reserved for STDIN_FILENO and STDOUT_FILENO, respectively
+In addition, fd == 2 is reserved for STDERR_FILENO (file descriptor wikipedia)
+
+Below codes are executed to find a valid fd value to open
+struct thread* t = thread_current();
+for(fd_idx = 3; fd_idx < FD_MAX; fd_idx++){
+    if(t->fd_table[fd_idx] == NULL){
+        t->fd_table[fd_idx] = open_fd;
+        break;
+    }
+}
+Then the currently running thread can access to the file by it's own fd_table and fd.
+Accessing files flow: thread with fd => thread->fd_table[fd] => struct file* f
+
+
+[Are file descriptors unique within the entire OS or just within a single process?]
+In Stanford PintOS, "Each thread has an independent set of file descriptors. File descriptors are not inherited by child processes."
+
+So, each thread has unique file descriptor values, orders, and files which are not shared with other threads.
+Hence, each thread has it's own set of file descriptors which is unique within a single process.
+single process?
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+               SURVEY QUESTIONS
+               ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
